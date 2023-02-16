@@ -29,8 +29,8 @@ if not gpd_spatialindex:
 @pytest.mark.slow
 @pytest.mark.parametrize("how", ["inner", "left", "right"])
 @given(
-    st_point_array(min_size=1, geoseries=True),
-    st_polygon_array(min_size=1, geoseries=True),
+    st_point_array(min_size=1, astype=gp.GeoSeries),
+    st_polygon_array(min_size=1, astype=gp.GeoSeries),
 )
 @hyp_settings
 def test_sjoin(how, gp_points, gp_polygons):

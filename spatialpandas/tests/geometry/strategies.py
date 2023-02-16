@@ -1,5 +1,4 @@
 import numpy as np
-from geopandas import GeoSeries
 from geopandas.array import from_shapely
 from hypothesis import HealthCheck, settings
 from hypothesis import strategies as st
@@ -8,6 +7,8 @@ from scipy.spatial import Voronoi
 from shapely import geometry as sg
 from shapely.affinity import scale, translate
 from shapely.ops import unary_union, polygonize
+
+from spatialpandas import GeoDataFrame, GeoSeries
 
 hyp_settings = settings(
     deadline=None,
@@ -29,7 +30,7 @@ st_points = arrays(
 
 
 @st.composite
-def st_point_array(draw, min_size=0, max_size=30, geoseries=False):
+def st_point_array(draw, min_size=0, max_size=30, astype=None):
     n = draw(st.integers(min_size, max_size))
     points = []
     for i in range(n):
@@ -41,13 +42,13 @@ def st_point_array(draw, min_size=0, max_size=30, geoseries=False):
         points.append(sg.Point(point))
 
     result = from_shapely(points)
-    if geoseries:
-        result = GeoSeries(result)
+    if astype:
+        result = astype(result)
     return result
 
 
 @st.composite
-def st_multipoint_array(draw, min_size=0, max_size=30, geoseries=False):
+def st_multipoint_array(draw, min_size=0, max_size=30, astype=None):
     n = draw(st.integers(min_size, max_size))
     lines = []
     for i in range(n):
@@ -60,13 +61,13 @@ def st_multipoint_array(draw, min_size=0, max_size=30, geoseries=False):
         lines.append(sg.MultiPoint(points))
 
     result = from_shapely(lines)
-    if geoseries:
-        result = GeoSeries(result)
+    if astype:
+        result = astype(result)
     return result
 
 
 @st.composite
-def st_line_array(draw, min_size=0, max_size=30, geoseries=False):
+def st_line_array(draw, min_size=0, max_size=30, astype=None):
     n = draw(st.integers(min_size, max_size))
     lines = []
     for i in range(n):
@@ -79,8 +80,8 @@ def st_line_array(draw, min_size=0, max_size=30, geoseries=False):
         lines.append(sg.LineString(points))
 
     result = from_shapely(lines)
-    if geoseries:
-        result = GeoSeries(result)
+    if astype:
+        result = astype(result)
     return result
 
 
@@ -100,7 +101,7 @@ def get_unique_points(
 
 
 @st.composite
-def st_ring_array(draw, min_size=3, max_size=30, geoseries=False):
+def st_ring_array(draw, min_size=3, max_size=30, astype=None):
     assert min_size >= 3
     n = draw(st.integers(min_size, max_size))
     rings = []
@@ -108,13 +109,13 @@ def st_ring_array(draw, min_size=3, max_size=30, geoseries=False):
         rings.append(sg.LinearRing(get_unique_points(n)))
 
     result = from_shapely(rings)
-    if geoseries:
-        result = GeoSeries(result)
+    if astype:
+        result = astype(result)
     return result
 
 
 @st.composite
-def st_multiline_array(draw, min_size=0, max_size=5, geoseries=False):
+def st_multiline_array(draw, min_size=0, max_size=5, astype=None):
     n = draw(st.integers(min_size, max_size))
     multilines = []
     for i in range(n):
@@ -131,8 +132,8 @@ def st_multiline_array(draw, min_size=0, max_size=5, geoseries=False):
         multilines.append(sg.MultiLineString(lines))
 
     result = from_shapely(multilines)
-    if geoseries:
-        result = GeoSeries(result)
+    if astype:
+        result = astype(result)
     return result
 
 
@@ -191,7 +192,7 @@ def st_polygon(draw, n=10, num_holes=None, xmid=0, ymid=0):
 
 
 @st.composite
-def st_polygon_array(draw, min_size=0, max_size=5, geoseries=False):
+def st_polygon_array(draw, min_size=0, max_size=5, astype=None):
     n = draw(st.integers(min_value=min_size, max_value=max_size))
     sg_polygons = [
         draw(st_polygon(xmid=draw(st.floats(-50, 50)), ymid=draw(st.floats(-50, 50))))
@@ -199,13 +200,13 @@ def st_polygon_array(draw, min_size=0, max_size=5, geoseries=False):
     ]
 
     result = from_shapely(sg_polygons)
-    if geoseries:
-        result = GeoSeries(result)
+    if astype:
+        result = astype(result)
     return result
 
 
 @st.composite
-def st_multipolygon_array(draw, min_size=0, max_size=5, geoseries=False):
+def st_multipolygon_array(draw, min_size=0, max_size=5, astype=None):
     n = draw(st.integers(min_value=min_size, max_value=max_size))
     sg_multipolygons = []
     for _ in range(n):
@@ -231,9 +232,37 @@ def st_multipolygon_array(draw, min_size=0, max_size=5, geoseries=False):
         sg_multipolygons.append(sg.MultiPolygon(polygons))
 
     result = from_shapely(sg_multipolygons)
-    if geoseries:
-        result = GeoSeries(result)
+    if astype:
+        result = astype(result)
     return result
+
+
+@st.composite
+def st_geodataframe(draw, min_size=1, max_size=5, column_names=None):
+    n = draw(st.integers(min_size, max_size))
+    kwargs = dict(min_size=n, max_size=n, astype=GeoSeries)
+
+    columns = {}
+    if column_names is None or "points" in column_names:
+        columns["points"] = draw(st_point_array(**kwargs))
+    if column_names is None or "multipoints" in column_names:
+        columns["multipoints"] = draw(st_multipoint_array(**kwargs))
+    if column_names is None or "lines" in column_names:
+        columns["lines"] = draw(st_line_array(**kwargs))
+    if column_names is None or "multilines" in column_names:
+        columns["multilines"] = draw(st_multiline_array(**kwargs))
+    if column_names is None or "polygons" in column_names:
+        columns["polygons"] = draw(st_polygon_array(**kwargs))
+    if column_names is None or "multipolygons" in column_names:
+        columns["multipolygons"] = draw(st_multipolygon_array(**kwargs))
+    if column_names is None or "rings" in column_names:
+        r = max(n, 3)
+        ring_kwargs = dict(min_size=r, max_size=r, astype=GeoSeries)
+        columns["rings"] = draw(st_ring_array(**ring_kwargs))[:n]
+    if column_names is None or "a" in column_names:
+        columns["a"] = np.arange(n)
+
+    return GeoDataFrame(columns)
 
 
 @st.composite

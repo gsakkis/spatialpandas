@@ -7,15 +7,12 @@ from pathlib import Path
 import pytest
 from hypothesis import HealthCheck, Phase, Verbosity, given, settings
 
-from .geometry.strategies import (
-    st_bounds,
-    st_multiline_array,
-    st_multipoint_array,
-    st_point_array,
-)
-from spatialpandas import GeoDataFrame, GeoSeries
+from spatialpandas import GeoDataFrame
 from spatialpandas.dask import DaskGeoDataFrame
 from spatialpandas.io import read_parquet, read_parquet_dask, to_parquet
+
+from .geometry.strategies import st_bounds, st_geodataframe
+
 
 dask.config.set(scheduler="single-threaded")
 
@@ -26,73 +23,28 @@ hyp_settings = settings(
 )
 
 
-@given(
-    gp_point=st_point_array(min_size=1, geoseries=True),
-    gp_multipoint=st_multipoint_array(min_size=1, geoseries=True),
-    gp_multiline=st_multiline_array(min_size=1, geoseries=True),
-)
+@given(df=st_geodataframe())
 @hyp_settings
-def test_parquet(gp_point, gp_multipoint, gp_multiline, tmp_path_factory):
+def test_parquet(df, tmp_path_factory):
     with tmp_path_factory.mktemp("spatialpandas", numbered=True) as tmp_path:
-        # Build dataframe
-        n = min(len(gp_multipoint), len(gp_multiline))
-        df = GeoDataFrame({
-            'point': GeoSeries(gp_point[:n]),
-            'multipoint': GeoSeries(gp_multipoint[:n]),
-            'multiline': GeoSeries(gp_multiline[:n]),
-            'a': list(range(n))
-        })
-
         df.index.name = 'range_idx'
 
         path = tmp_path / 'df.parq'
         to_parquet(df, path)
-        df_read = read_parquet(str(path), columns=['point', 'multipoint', 'multiline', 'a'])
+        df_read = read_parquet(path)
         assert isinstance(df_read, GeoDataFrame)
         pd.testing.assert_frame_equal(df, df_read)
-        assert df_read.index.name == df.index.name
 
-
-@given(
-    gp_point=st_point_array(min_size=1, geoseries=True),
-    gp_multipoint=st_multipoint_array(min_size=1, geoseries=True),
-    gp_multiline=st_multiline_array(min_size=1, geoseries=True),
-)
-@hyp_settings
-def test_parquet_columns(gp_point, gp_multipoint, gp_multiline,
-                         tmp_path_factory):
-    with tmp_path_factory.mktemp("spatialpandas", numbered=True) as tmp_path:
-        # Build dataframe
-        n = min(len(gp_multipoint), len(gp_multiline))
-        df = GeoDataFrame({
-            'point': GeoSeries(gp_point[:n]),
-            'multipoint': GeoSeries(gp_multipoint[:n]),
-            'multiline': GeoSeries(gp_multiline[:n]),
-            'a': list(range(n))
-        })
-
-        path = tmp_path / 'df.parq'
-        to_parquet(df, path)
-        columns = ['a', 'multiline']
+        columns = ["a", "multilines", "polygons"]
         df_read = read_parquet(str(path), columns=columns)
         assert isinstance(df_read, GeoDataFrame)
         pd.testing.assert_frame_equal(df[columns], df_read)
 
 
-@given(
-    gp_multipoint=st_multipoint_array(min_size=1, geoseries=True),
-    gp_multiline=st_multiline_array(min_size=1, geoseries=True),
-)
+@given(df=st_geodataframe(column_names=("points", "lines", "a")))
 @hyp_settings
-def test_parquet_dask(gp_multipoint, gp_multiline, tmp_path_factory):
+def test_parquet_dask(df, tmp_path_factory):
     with tmp_path_factory.mktemp("spatialpandas", numbered=True) as tmp_path:
-        # Build dataframe
-        n = min(len(gp_multipoint), len(gp_multiline))
-        df = GeoDataFrame({
-            'points': GeoSeries(gp_multipoint[:n]),
-            'lines': GeoSeries(gp_multiline[:n]),
-            'a': list(range(n))
-        })
         ddf = dd.from_pandas(df, npartitions=3)
 
         path = tmp_path / 'ddf.parq'
@@ -107,41 +59,25 @@ def test_parquet_dask(gp_multipoint, gp_multiline, tmp_path_factory):
             np.asarray(ddf.map_partitions(len).compute() > 0)
         )[0]
         assert set(ddf_read._partition_bounds) == {'points', 'lines'}
-        expected_partition_bounds = (
-            ddf['points'].partition_bounds.iloc[nonempty].reset_index(drop=True)
-        )
-        expected_partition_bounds.index.name = 'partition'
-
-        pd.testing.assert_frame_equal(
-            expected_partition_bounds,
-            ddf_read._partition_bounds['points'],
-        )
-
-        expected_partition_bounds = (
-            ddf['lines'].partition_bounds.iloc[nonempty].reset_index(drop=True)
-        )
-        expected_partition_bounds.index.name = 'partition'
-        pd.testing.assert_frame_equal(
-            expected_partition_bounds,
-            ddf_read._partition_bounds['lines'],
-        )
-
-        assert ddf_read.geometry.name == 'points'
+        for column in "points", "lines":
+            expected_partition_bounds = (
+                ddf[column].partition_bounds.iloc[nonempty].reset_index(drop=True)
+            )
+            expected_partition_bounds.index.name = "partition"
+            pd.testing.assert_frame_equal(
+                expected_partition_bounds,
+                ddf_read._partition_bounds[column],
+            )
 
 
 @given(
-    gp_multipoint=st_multipoint_array(min_size=10, max_size=40, geoseries=True),
-    gp_multiline=st_multiline_array(min_size=10, max_size=40, geoseries=True),
+    st_geodataframe(
+        min_size=10, max_size=40, column_names=("multipoints", "multilines", "a")
+    )
 )
 @settings(deadline=None, max_examples=30)
-def test_pack_partitions(gp_multipoint, gp_multiline):
-    # Build dataframe
-    n = min(len(gp_multipoint), len(gp_multiline))
-    df = GeoDataFrame({
-        'points': GeoSeries(gp_multipoint[:n]),
-        'lines': GeoSeries(gp_multiline[:n]),
-        'a': list(range(n))
-    }).set_geometry('lines')
+def test_pack_partitions(df):
+    df = df.set_geometry("multilines")
     ddf = dd.from_pandas(df, npartitions=3)
 
     # Pack partitions
@@ -151,14 +87,14 @@ def test_pack_partitions(gp_multipoint, gp_multiline):
     assert ddf_packed.npartitions == 4
 
     # Check that rows are now sorted in order of hilbert distance
-    total_bounds = df.lines.total_bounds
-    hilbert_distances = ddf_packed.lines.map_partitions(
+    total_bounds = df.multilines.total_bounds
+    hilbert_distances = ddf_packed.multilines.map_partitions(
         lambda s: s.hilbert_distance(total_bounds=total_bounds)
     ).compute().values
 
     # Compute expected total_bounds
     expected_distances = np.sort(
-        df.lines.hilbert_distance(total_bounds=total_bounds).values
+        df.multilines.hilbert_distance(total_bounds=total_bounds).values
     )
 
     np.testing.assert_equal(expected_distances, hilbert_distances)
@@ -166,8 +102,9 @@ def test_pack_partitions(gp_multipoint, gp_multiline):
 
 @pytest.mark.slow
 @given(
-    gp_multipoint=st_multipoint_array(min_size=60, max_size=100, geoseries=True),
-    gp_multiline=st_multiline_array(min_size=60, max_size=100, geoseries=True),
+    df=st_geodataframe(
+        min_size=60, max_size=100, column_names=("multipoints", "multilines", "a")
+    ),
     use_temp_format=hs.booleans()
 )
 @settings(
@@ -182,16 +119,9 @@ def test_pack_partitions(gp_multipoint, gp_multiline):
     ],
     verbosity=Verbosity.verbose,
 )
-def test_pack_partitions_to_parquet(gp_multipoint, gp_multiline,
-                                    use_temp_format, tmp_path_factory):
+def test_pack_partitions_to_parquet(df, use_temp_format, tmp_path_factory):
     with tmp_path_factory.mktemp("spatialpandas", numbered=True) as tmp_path:
-        # Build dataframe
-        n = min(len(gp_multipoint), len(gp_multiline))
-        df = GeoDataFrame({
-            'points': GeoSeries(gp_multipoint[:n]),
-            'lines': GeoSeries(gp_multiline[:n]),
-            'a': list(range(n))
-        }).set_geometry('lines')
+        df = df.set_geometry("multilines")
         ddf = dd.from_pandas(df, npartitions=3)
 
         path = tmp_path / 'ddf.parq'
@@ -218,21 +148,21 @@ def test_pack_partitions_to_parquet(gp_multipoint, gp_multiline,
         assert ddf_packed.npartitions <= 12
 
         # Check that rows are now sorted in order of hilbert distance
-        total_bounds = df.lines.total_bounds
-        hilbert_distances = ddf_packed.lines.map_partitions(
+        total_bounds = df.multilines.total_bounds
+        hilbert_distances = ddf_packed.multilines.map_partitions(
             lambda s: s.hilbert_distance(total_bounds=total_bounds)
         ).compute().values
 
         # Compute expected total_bounds
         expected_distances = np.sort(
-            df.lines.hilbert_distance(total_bounds=total_bounds).values
+            df.multilines.hilbert_distance(total_bounds=total_bounds).values
         )
 
         np.testing.assert_equal(expected_distances, hilbert_distances)
-        assert ddf_packed.geometry.name == 'points'
+        assert ddf_packed.geometry.name == "multipoints"
 
         # Read columns
-        columns = ['a', 'lines']
+        columns = ["a", "multilines"]
         ddf_read_cols = read_parquet_dask(path, columns=columns)
         pd.testing.assert_frame_equal(
             ddf_read_cols.compute(), ddf_packed[columns].compute()
@@ -241,40 +171,28 @@ def test_pack_partitions_to_parquet(gp_multipoint, gp_multiline,
 
 @pytest.mark.slow
 @given(
-    gp_multipoint1=st_multipoint_array(min_size=10, max_size=40, geoseries=True),
-    gp_multiline1=st_multiline_array(min_size=10, max_size=40, geoseries=True),
-    gp_multipoint2=st_multipoint_array(min_size=10, max_size=40, geoseries=True),
-    gp_multiline2=st_multiline_array(min_size=10, max_size=40, geoseries=True),
+    df1=st_geodataframe(
+        min_size=10, max_size=40, column_names=("multipoints", "multilines", "a")
+    ),
+    df2=st_geodataframe(
+        min_size=10, max_size=40, column_names=("multipoints", "multilines", "a")
+    ),
 )
 @settings(deadline=None, max_examples=30, suppress_health_check=[HealthCheck.too_slow])
-def test_pack_partitions_to_parquet_glob(gp_multipoint1, gp_multiline1,
-                                         gp_multipoint2, gp_multiline2,
-                                         tmp_path_factory):
+def test_pack_partitions_to_parquet_glob(df1, df2, tmp_path_factory):
     with tmp_path_factory.mktemp("spatialpandas", numbered=True) as tmp_path:
-        # Build dataframe1
-        n = min(len(gp_multipoint1), len(gp_multiline1))
-        df1 = GeoDataFrame({
-            'points': GeoSeries(gp_multipoint1[:n]),
-            'lines': GeoSeries(gp_multiline1[:n]),
-            'a': list(range(n))
-        }).set_geometry('lines')
+        df1 = df1.set_geometry("multilines")
         ddf1 = dd.from_pandas(df1, npartitions=3)
         path1 = tmp_path / 'ddf1.parq'
         ddf_packed1 = ddf1.pack_partitions_to_parquet(str(path1), npartitions=3)
 
-        # Build dataframe2
-        n = min(len(gp_multipoint2), len(gp_multiline2))
-        df2 = GeoDataFrame({
-            'points': GeoSeries(gp_multipoint2[:n]),
-            'lines': GeoSeries(gp_multiline2[:n]),
-            'a': list(range(n))
-        }).set_geometry('lines')
+        df2 = df2.set_geometry("multilines")
         ddf2 = dd.from_pandas(df2, npartitions=3)
         path2 = tmp_path / 'ddf2.parq'
         ddf_packed2 = ddf2.pack_partitions_to_parquet(str(path2), npartitions=4)
 
         # Load both packed datasets with glob
-        ddf_globbed = read_parquet_dask(tmp_path / "ddf*.parq", geometry="lines")
+        ddf_globbed = read_parquet_dask(tmp_path / "ddf*.parq", geometry="multilines")
 
         # Check the number of partitions (< 7 can happen in the case of empty partitions)
         assert ddf_globbed.npartitions <= 7
@@ -286,61 +204,47 @@ def test_pack_partitions_to_parquet_glob(gp_multipoint1, gp_multiline1,
 
         # Check partition bounds
         expected_bounds = {
-            'points': pd.concat([
-                ddf_packed1._partition_bounds['points'],
-                ddf_packed2._partition_bounds['points'],
+            "multipoints": pd.concat([
+                ddf_packed1._partition_bounds["multipoints"],
+                ddf_packed2._partition_bounds["multipoints"],
             ]).reset_index(drop=True),
-            'lines': pd.concat([
-                ddf_packed1._partition_bounds['lines'],
-                ddf_packed2._partition_bounds['lines'],
+            "multilines": pd.concat([
+                ddf_packed1._partition_bounds["multilines"],
+                ddf_packed2._partition_bounds["multilines"],
             ]).reset_index(drop=True),
         }
-        expected_bounds['points'].index.name = 'partition'
-        expected_bounds['lines'].index.name = 'partition'
+        expected_bounds["multipoints"].index.name = "partition"
+        expected_bounds["multilines"].index.name = "partition"
         pd.testing.assert_frame_equal(
-            expected_bounds['points'], ddf_globbed._partition_bounds['points']
+            expected_bounds["multipoints"], ddf_globbed._partition_bounds["multipoints"]
         )
 
         pd.testing.assert_frame_equal(
-            expected_bounds['lines'], ddf_globbed._partition_bounds['lines']
+            expected_bounds["multilines"], ddf_globbed._partition_bounds["multilines"]
         )
 
-        assert ddf_globbed.geometry.name == 'lines'
+        assert ddf_globbed.geometry.name == "multilines"
 
 
 @pytest.mark.slow
 @given(
-    gp_multipoint1=st_multipoint_array(min_size=10, max_size=40, geoseries=True),
-    gp_multiline1=st_multiline_array(min_size=10, max_size=40, geoseries=True),
-    gp_multipoint2=st_multipoint_array(min_size=10, max_size=40, geoseries=True),
-    gp_multiline2=st_multiline_array(min_size=10, max_size=40, geoseries=True),
+    df1=st_geodataframe(
+        min_size=10, max_size=40, column_names=("multipoints", "multilines", "a")
+    ),
+    df2=st_geodataframe(
+        min_size=10, max_size=40, column_names=("multipoints", "multilines", "a")
+    ),
     bounds=st_bounds(),
 )
 @settings(deadline=None, max_examples=30, suppress_health_check=[HealthCheck.too_slow])
-def test_pack_partitions_to_parquet_list_bounds(
-        gp_multipoint1, gp_multiline1,
-        gp_multipoint2, gp_multiline2,
-        bounds, tmp_path_factory,
-):
+def test_pack_partitions_to_parquet_list_bounds(df1, df2, bounds, tmp_path_factory):
     with tmp_path_factory.mktemp("spatialpandas", numbered=True) as tmp_path:
-        # Build dataframe1
-        n = min(len(gp_multipoint1), len(gp_multiline1))
-        df1 = GeoDataFrame({
-            'points': GeoSeries(gp_multipoint1[:n]),
-            'lines': GeoSeries(gp_multiline1[:n]),
-            'a': list(range(n))
-        }).set_geometry('lines')
+        df1 = df1.set_geometry("multilines")
         ddf1 = dd.from_pandas(df1, npartitions=3)
         path1 = tmp_path / 'ddf1.parq'
         ddf_packed1 = ddf1.pack_partitions_to_parquet(str(path1), npartitions=3)
 
-        # Build dataframe2
-        n = min(len(gp_multipoint2), len(gp_multiline2))
-        df2 = GeoDataFrame({
-            'points': GeoSeries(gp_multipoint2[:n]),
-            'lines': GeoSeries(gp_multiline2[:n]),
-            'a': list(range(n))
-        }).set_geometry('lines')
+        df2 = df2.set_geometry("multilines")
         ddf2 = dd.from_pandas(df2, npartitions=3)
         path2 = tmp_path / 'ddf2.parq'
         ddf_packed2 = ddf2.pack_partitions_to_parquet(str(path2), npartitions=4)
@@ -348,7 +252,7 @@ def test_pack_partitions_to_parquet_list_bounds(
         # Load both packed datasets with glob
         ddf_read = read_parquet_dask(
             [str(tmp_path / "ddf1.parq"), str(tmp_path / "ddf2.parq")],
-            geometry="points", bounds=bounds
+            geometry="multipoints", bounds=bounds,
         )
 
         # Check the number of partitions (< 7 can happen in the case of empty partitions)
@@ -366,8 +270,8 @@ def test_pack_partitions_to_parquet_list_bounds(
 
         # Compute expected partition bounds
         points_bounds = pd.concat([
-            ddf_packed1._partition_bounds['points'],
-            ddf_packed2._partition_bounds['points'],
+            ddf_packed1._partition_bounds["multipoints"],
+            ddf_packed2._partition_bounds["multipoints"],
         ]).reset_index(drop=True)
 
         x0, y0, x1, y1 = bounds
@@ -382,23 +286,23 @@ def test_pack_partitions_to_parquet_list_bounds(
         points_bounds = points_bounds[partition_inds].reset_index(drop=True)
 
         lines_bounds = pd.concat([
-            ddf_packed1._partition_bounds['lines'],
-            ddf_packed2._partition_bounds['lines'],
+            ddf_packed1._partition_bounds["multilines"],
+            ddf_packed2._partition_bounds["multilines"],
         ]).reset_index(drop=True)[partition_inds].reset_index(drop=True)
         points_bounds.index.name = 'partition'
         lines_bounds.index.name = 'partition'
 
         # Check partition bounds
         pd.testing.assert_frame_equal(
-            points_bounds, ddf_read._partition_bounds['points']
+            points_bounds, ddf_read._partition_bounds["multipoints"]
         )
 
         pd.testing.assert_frame_equal(
-            lines_bounds, ddf_read._partition_bounds['lines']
+            lines_bounds, ddf_read._partition_bounds["multilines"]
         )
 
         # Check active geometry column
-        assert ddf_read.geometry.name == 'points'
+        assert ddf_read.geometry.name == "multipoints"
 
 
 @pytest.mark.parametrize("filename", ["serial_5.0.0.parq", "serial_8.0.0.parq"])
