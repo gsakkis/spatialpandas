@@ -23,6 +23,9 @@ extras_require = {
         'geopandas',
         'holoviews',
         'matplotlib',
+    ],
+    'tiledb': [
+        'tiledb',
     ]
 }
 
