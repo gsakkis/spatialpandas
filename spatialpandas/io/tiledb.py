@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import tiledb
 from tiledb.multirange_indexing import EmptyRange
+from tiledb.cloud.compute import Delayed
 
 from ..geodataframe import GeoDataFrame
 from ..geometry import GeometryDtype
@@ -21,6 +22,7 @@ def to_tiledb(
     uri: str,
     npartitions: int = 1,
     ctx: Optional[tiledb.Ctx] = None,
+    tiledb_cloud_kwargs: Optional[Mapping[str, Any]] = None,
 ) -> None:
     from_pandas_kwargs = dict(
         # write a dense array only if the df index is range(0, len(df))
@@ -79,6 +81,7 @@ def to_tiledb(
         uri,
         map(_flatten_geometry_columns, partition_dfs),
         from_pandas_kwargs,
+        tiledb_cloud_kwargs,
     )
 
     # save the partition ranges and geometry bounds as metadata
@@ -170,6 +173,7 @@ def _from_multiple_pandas(
     uri: str,
     dfs: Iterable[pd.DataFrame],
     from_pandas_kwargs: Optional[Mapping[str, Any]] = None,
+    tiledb_cloud_kwargs: Optional[Mapping[str, Any]] = None,
 ) -> None:
     def from_pandas(df: pd.DataFrame, mode) -> None:
         tiledb.from_pandas(
@@ -184,9 +188,20 @@ def _from_multiple_pandas(
 
     iter_dfs = iter(dfs)
 
-    from_pandas(next(iter_dfs), mode="ingest")
-    for df in iter_dfs:
-        from_pandas(df, mode="append")
+    if tiledb_cloud_kwargs is None:
+        from_pandas(next(iter_dfs), mode="ingest")
+        for df in iter_dfs:
+            from_pandas(df, mode="append")
+    else:
+        ingest_task = Delayed(from_pandas, **tiledb_cloud_kwargs)(
+            next(iter_dfs), mode="ingest"
+        )
+        tasks = [ingest_task]
+        for df in iter_dfs:
+            append_task = Delayed(from_pandas, **tiledb_cloud_kwargs)(df, mode="append")
+            append_task.depends_on(ingest_task)
+            tasks.append(append_task)
+        ingest_task.compute()
 
 
 def iter_partition_slices(values: np.ndarray, p: int) -> Iterable[slice]:

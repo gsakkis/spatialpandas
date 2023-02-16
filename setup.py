@@ -26,6 +26,7 @@ extras_require = {
     ],
     'tiledb': [
         'tiledb',
+        'tiledb-cloud',
     ]
 }
 
